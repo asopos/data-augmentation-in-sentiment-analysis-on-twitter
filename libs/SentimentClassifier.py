@@ -1,0 +1,180 @@
+from transformers import BertTokenizer, BertForSequenceClassification, logging, get_linear_schedule_with_warmup
+import torch
+import numpy as np
+import datetime
+import time
+from torch.optim import AdamW
+from sklearn.model_selection import KFold
+from torch.utils.data import TensorDataset, DataLoader, Subset, RandomSampler, SequentialSampler
+
+
+def flat_accuracy(preds, labels):
+    pred_flat = np.argmax(preds, axis=1).flatten()
+    labels_flat = labels.flatten()
+    return np.sum(pred_flat == labels_flat) / len(labels_flat)
+
+
+def flat_f1_score(preds, labels):
+    pred_flat = np.argmax(preds, axis=1).flatten()
+    labels_flat = labels.flatten()
+
+    tp = np.sum((pred_flat == 1) & (labels_flat == 1))
+    fp = np.sum((pred_flat == 1) & (labels_flat == 0))
+    fn = np.sum((pred_flat == 0) & (labels_flat == 1))
+
+    precision = tp / (tp + fp)
+    recall = tp / (tp + fn)
+
+    f1_score = 2 * (precision * recall) / (precision + recall)
+
+    return f1_score
+
+
+def format_time(elapsed):
+    """
+    Takes a time in seconds and returns a string hh:mm:ss
+    """
+    # Round to the nearest second.
+    elapsed_rounded = int(round(elapsed))
+
+    # Format as hh:mm:ss
+    return str(datetime.timedelta(seconds=elapsed_rounded))
+
+
+def train_model(
+        model: BertForSequenceClassification,
+        train_dataloader: DataLoader,
+        optimizer: AdamW,
+        scheduler: get_linear_schedule_with_warmup,
+        device="cpu"):
+    t0 = time.time()
+    model.train()
+    model.to(device)
+    total_train_loss = 0
+    for step, batch in enumerate(train_dataloader):
+        elapsed = format_time(time.time() - t0)
+#        if step % 40 == 0 and not step == 0:
+        print(f'Batch {step} of {len(train_dataloader)}. Elapsed: {elapsed}')
+        b_input_ids = batch[0].to(device)
+        b_input_mask = batch[1].to(device)
+        b_labels = batch[2].to(device)
+
+        model.zero_grad()
+        train_output = model(b_input_ids,
+                             token_type_ids=None,
+                             attention_mask=b_input_mask,
+                             labels=b_labels)
+        loss = train_output.loss
+        logits = train_output.logits
+
+        total_train_loss += loss.item()
+
+        loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        optimizer.step()
+        scheduler.step()
+    avg_train_loss = total_train_loss / len(train_dataloader)
+    training_time = format_time(time.time() - t0)
+    print("")
+    print("  Average training loss: {0:.2f}".format(avg_train_loss))
+    print("  Training epoch took: {:}".format(training_time))
+
+
+def eval_model(
+        model: BertForSequenceClassification,
+        eval_dataloader: DataLoader,
+        training_stats: list,
+        device="cpu"):
+    t0 = time.time()
+    model.eval()
+    model.to(device)
+    total_eval_accuracy = 0
+    total_eval_loss = 0
+    total_eval_f1score = 0
+    confusion_matrix = torch.zeros((3, 3))
+    for batch in eval_dataloader:
+        b_input_ids = batch[0].to(device)
+        b_input_mask = batch[1].to(device)
+        b_labels = batch[2].to(device)
+
+        with torch.no_grad():
+            eval_output = model(b_input_ids,
+                                token_type_ids=None,
+                                attention_mask=b_input_mask,
+                                labels=b_labels)
+            loss = eval_output.loss
+            logits = eval_output.logits
+
+            _, preds = torch.max(logits, 1)
+            for t, p in zip(b_labels.view(-1), preds.view(-1)):
+                confusion_matrix[t.long(), p.long()] += 1
+        total_eval_loss += loss.item()
+        logits = logits.detach().cpu().numpy()
+        label_ids = b_labels.to('cpu').numpy()
+        total_eval_accuracy += flat_accuracy(logits, label_ids)
+        total_eval_f1score += flat_f1_score(logits, label_ids)
+    avg_val_accuracy = total_eval_accuracy / len(eval_dataloader)
+    avg_val_f1 = total_eval_f1score / len(eval_dataloader)
+    avg_val_loss = total_eval_loss / len(eval_dataloader)
+
+    validation_time = format_time(time.time() - t0)
+
+    print("  Accuracy: {0:.2f}".format(avg_val_accuracy))
+    print(f"  F1 Score: {avg_val_f1}")
+    print(confusion_matrix)
+    print("  Validation Loss: {0:.2f}".format(avg_val_loss))
+    print("  Validation took: {:}".format(validation_time))
+    training_stats.append(
+        {
+            'Valid. Loss': avg_val_loss,
+            'Valid. Accur.': avg_val_accuracy,
+            'Validation Time': validation_time,
+            'Valid. F1': avg_val_f1,
+            'Valid. Confusion Matrix': confusion_matrix
+        }
+    )
+
+def k_cross_fold_validation(dataset: TensorDataset, k=5, epochs=2, batch_size=16, device="cpu"):
+    kfold = KFold(n_splits=k, shuffle=True)
+    for fold, (train_ids, val_ids) in enumerate(kfold.split(dataset)):
+        training_stats = []
+        print(f"Fold: {fold + 1}/{k}")
+        model = BertForSequenceClassification.from_pretrained(
+            "bert-base-uncased",
+            num_labels=3,
+            output_attentions=False,
+            output_hidden_states=False,
+        )
+
+        optimizer = AdamW(model.parameters(),
+                          lr=1e-5,  # args.learning_rate - default is 5e-5, our notebook had 2e-5
+                          eps=1e-8  # args.adam_epsilon  - default is 1e-8.
+                          )
+
+        train_dataset = Subset(dataset, train_ids)
+        val_dataset = Subset(dataset, val_ids)
+
+        train_dataloader = DataLoader(train_dataset,
+                                      batch_size=batch_size,
+                                      sampler=RandomSampler(train_dataset)
+                                      )
+        validation_dataloader = DataLoader(val_dataset,
+                                           batch_size=batch_size,
+                                           sampler=SequentialSampler(val_dataset)
+                                           )
+        scheduler = get_linear_schedule_with_warmup(optimizer,
+                                                    num_warmup_steps=0,
+                                                    num_training_steps=len(train_dataloader) * epochs)
+        optimizer.zero_grad()
+        print(f"{len(train_dataset)} training samples'")
+        print(f"{len(val_dataset)} validation samples")
+        for epoch in range(epochs):
+            print("")
+            print('======== Epoch {:} / {:} ========'.format(epoch + 1, epochs))
+            print('Training...')
+            train_model(model, train_dataloader, optimizer, scheduler, device)
+            print("")
+            print("Running Validation...")
+            eval_model(model, validation_dataloader,training_stats, device)
