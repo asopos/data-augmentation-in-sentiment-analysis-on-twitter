@@ -1,4 +1,4 @@
-from transformers import BertForSequenceClassification, get_linear_schedule_with_warmup
+from transformers import BertForSequenceClassification, get_linear_schedule_with_warmup, AutoTokenizer
 import torch
 import numpy as np
 import datetime
@@ -8,7 +8,11 @@ from sklearn.model_selection import KFold
 from torch.utils.data import TensorDataset, DataLoader, Subset, RandomSampler, SequentialSampler
 from sklearn.metrics import f1_score
 
-
+label_mapping = {
+    'negative': 0,
+    'neutral': 1,
+    'positive': 2
+}
 def flat_accuracy(preds, labels):
     pred_flat = np.argmax(preds, axis=1).flatten()
     labels_flat = labels.flatten()
@@ -190,3 +194,24 @@ def evaluation(train_dataloader, validation_dataloader, epochs=2, device="cpu"):
         print("")
         print("Running Validation...")
         eval_model(model, validation_dataloader, training_stats, device)
+
+def tweet_pipeline(tokenizer,tweet, input_ids, attention_masks):
+    encoded_dict = tokenizer.encode_plus(tweet,
+                                         add_special_tokens = True,
+                                         padding= 'max_length',
+                                         return_attention_mask = True,
+                                         return_tensors = 'pt')
+    input_ids.append(encoded_dict["input_ids"])
+    attention_masks.append(encoded_dict["attention_mask"])
+
+def preprocess(data,batch_size):
+    input_ids = []
+    attention_masks = []
+    tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+    labels = data["Label"].apply(lambda x: label_mapping[x]).tolist()
+    data["Tweet"].apply(lambda tweet: tweet_pipeline(tokenizer,tweet,input_ids,attention_masks))
+    input_ids = torch.cat(input_ids, dim=0)
+    attention_masks = torch.cat(attention_masks, dim=0)
+    labels = torch.tensor(labels)
+    dataset = TensorDataset(input_ids, attention_masks, labels)
+    return DataLoader(dataset, sampler=RandomSampler(dataset), batch_size=batch_size)
