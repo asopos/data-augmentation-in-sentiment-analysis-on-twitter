@@ -38,7 +38,7 @@ def train_model(
     for step, batch in enumerate(train_dataloader):
         elapsed = format_time(time.time() - t0)
 #        if step % 40 == 0 and not step == 0:
-        print(f'Batch {step} of {len(train_dataloader)}. Elapsed: {elapsed}')
+        print(f"Batch {step} of {len(train_dataloader)}. Elapsed: {elapsed}")
         b_input_ids = batch[0].to(device)
         b_input_mask = batch[1].to(device)
         b_labels = batch[2].to(device)
@@ -62,8 +62,8 @@ def train_model(
     avg_train_loss = total_train_loss / len(train_dataloader)
     training_time = format_time(time.time() - t0)
     print("")
-    print("  Average training loss: {0:.2f}".format(avg_train_loss))
-    print("  Training epoch took: {:}".format(training_time))
+    print(f"  Average training loss: {avg_train_loss:.2f}")
+    print(f"  Training epoch took: {training_time}")
 
 
 def eval_model(
@@ -105,11 +105,11 @@ def eval_model(
 
     validation_time = format_time(time.time() - t0)
 
-    print("  Accuracy: {0:.2f}".format(avg_val_accuracy))
-    print(f"  F1 Score: {avg_val_f1:0:.2f}")
+    print(f"  Accuracy: {avg_val_accuracy:.2f}")
+    print(f"  F1 Score: {avg_val_f1:.2f}")
     print(confusion_matrix)
-    print("  Validation Loss: {0:.2f}".format(avg_val_loss))
-    print("  Validation took: {:}".format(validation_time))
+    print(f"  Validation Loss: {avg_val_loss:.2f}")
+    print(f"  Validation took: {validation_time}")
     training_stats.append(
         {
             'Valid. Loss': avg_val_loss,
@@ -156,8 +156,8 @@ def k_cross_fold_validation(dataset: TensorDataset, k=5, epochs=2, batch_size=16
         print(f"{len(val_dataset)} validation samples")
         for epoch in range(epochs):
             print("")
-            print('======== Epoch {:} / {:} ========'.format(epoch + 1, epochs))
-            print('Training...')
+            print(f"======== Epoch {epoch + 1} / {epochs} ========")
+            print("Training...")
             train_model(model, train_dataloader, optimizer, scheduler, device)
             print("")
             print("Running Validation...")
@@ -184,8 +184,8 @@ def evaluation(train_dataloader, validation_dataloader, epochs=2, device="cpu"):
     optimizer.zero_grad()
     for epoch in range(epochs):
         print("")
-        print('======== Epoch {:} / {:} ========'.format(epoch + 1, epochs))
-        print('Training...')
+        print(f"======== Epoch {epoch + 1} / {epochs} ========")
+        print("Training...")
         train_model(model, train_dataloader, optimizer, scheduler, device)
         print("")
         print("Running Validation...")
