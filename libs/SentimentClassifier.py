@@ -1,4 +1,4 @@
-from transformers import BertForSequenceClassification, get_linear_schedule_with_warmup, AutoTokenizer
+from transformers import BertForSequenceClassification, get_linear_schedule_with_warmup, AutoTokenizer, logging
 import torch
 import numpy as np
 import datetime
@@ -7,6 +7,8 @@ from torch.optim import AdamW
 from sklearn.model_selection import KFold
 from torch.utils.data import TensorDataset, DataLoader, Subset, RandomSampler, SequentialSampler
 from sklearn.metrics import f1_score
+
+logging.set_verbosity_error()
 
 label_mapping = {
     'negative': 0,
@@ -95,11 +97,12 @@ def eval_model(
             loss = eval_output.loss
             logits = eval_output.logits
 
-            _, preds = torch.max(logits, 1)
+            _, preds_torch = torch.max(logits, 1)
+            preds = preds_torch.detach().cpu().numpy()
             logits = logits.detach().cpu().numpy()
             label_ids = b_labels.to('cpu').numpy()
             test_f1 += f1_score(label_ids, preds, average='macro')
-            for t, p in zip(b_labels.view(-1), preds.view(-1)):
+            for t, p in zip(b_labels.view(-1), preds_torch.view(-1)):
                 confusion_matrix[t.long(), p.long()] += 1
         total_eval_loss += loss.item()
         total_eval_accuracy += flat_accuracy(logits, label_ids)
