@@ -2,16 +2,16 @@ from nltk.corpus import stopwords, wordnet
 from nltk.tokenize import TweetTokenizer
 from nltk.stem import WordNetLemmatizer
 from nltk import pos_tag
-from transformers import MarianMTModel, MarianTokenizer
+from transformers import MarianMTModel, MarianTokenizer, GPT2LMHeadModel, GPT2Tokenizer
 import numpy as np
 import pandas as pd
 import random
-import re
 
 tweet_tokenizer = TweetTokenizer()
 
 lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
+
 
 def token_pipeline(tweet):
     # Lowercase the tweet
@@ -38,24 +38,46 @@ def token_pipeline(tweet):
     return tokens
 
 
-def fill_synthetic_data_percentage(data, percentage, method, multiplier=1, synonym_percentage=0.5):
+def generate_synthetic_data(data, synthetic_method, coverage_percentage=0.5, back_translate=None,
+                            word_embedding_model=None, tgt_languages=None, gpt2=None, seed_percentage=0.5):
+    if synthetic_method == "synonyms":
+        return replace_words_with_synonyms(data["Tweet_Token"].values[0], coverage_percentage)
+    elif synthetic_method == "back_translation":
+        tgt_lang = random.choice(tgt_languages)
+        return back_translate.translate_tweet(data["Tweet"].values[0], tgt_lang)
+    elif synthetic_method == "word_embedding":
+        return replace_words_with_word_embeddings(data["Tweet_Token"].values[0], word_embedding_model,
+                                                  coverage_percentage)
+    elif synthetic_method == "gp2":
+        return gpt2.generate_synthetic_data_with_gpt(data["Tweet_Token"].values[0], seed_percentage)
 
+    return data["Tweet"].values[0]
+
+
+def fill_synthetic_data_percentage(data, percentage, method, multiplier=1, coverage_percentage=0.5):
     sample_length = int(len(data) * percentage)
-    synth_method = method_mapping[method]
+    # synth_method = method_mapping[method]
     sample = data.sample(sample_length)
     sample = pd.DataFrame(np.repeat(sample.values, multiplier, axis=0), columns=sample.columns)
     sample["Tweet_Token"] = sample["Tweet"].apply(token_pipeline)
-    sample["Tweet"] = sample["Tweet_Token"].apply((lambda tweet: synth_method(tweet, synonym_percentage)))
+    # sample["Tweet"] = sample["Tweet_Token"].apply((lambda tweet: synth_method(tweet, synonym_percentage)))
     return pd.concat([data, sample])
 
-def fill_missing_labels(data, method, synonym_percentage=0.5):
+
+def fill_missing_labels(data,
+                        method,
+                        coverage_percentage=0.5,
+                        tgt_languages=None,
+                        word_embedding_model=None,
+                        seed_percentage=0.5):
     data["Tweet_Token"] = data["Tweet"].apply(token_pipeline)
     label_counts = data['Label'].value_counts()
     max_label_count = max(label_counts)
-    synth_method = method_mapping[method]
     print(max(label_counts))
     training_dataframes = [data]
 
+    back_translation = BackTranslation(tgt_languages) if method == "back_translation" else None
+    gp2 = GPT2() if method == "gp2" else None
     for label in label_counts.index:
         fill_count = max_label_count - label_counts[label]
         label_data = data[data['Label'] == label]
@@ -63,14 +85,15 @@ def fill_missing_labels(data, method, synonym_percentage=0.5):
             synth_label_data = []
             for i in range(fill_count):
                 sample = label_data.sample()
-                synth_tweet = synth_method(sample["Tweet_Token"].values[0], synonym_percentage)
+                synth_tweet = generate_synthetic_data(sample, method, coverage_percentage, back_translation,
+                                                      word_embedding_model, tgt_languages, gp2, seed_percentage)
+
                 label = sample["Label"].values[0]
                 synth_label_data.append([synth_tweet, label])
             synth_label_data = pd.DataFrame(synth_label_data, columns=["Tweet", "Label"])
             training_dataframes.append(synth_label_data)
         print(label, label_counts[label])
     return pd.concat(training_dataframes)
-
 
 
 def pos_mapping(tag):
@@ -112,103 +135,126 @@ def replace_words_with_synonyms(tweet_tokens, percentage=0.2, similarity_thresho
 
     return ' '.join(tmp_tokens)
 
-tgt_languages = [
-    "fr",
-    "de",
-#    "es",
-    "ru",
-#    "jap"
-]
-language_combinations = [
-#    ("fr", "de"),
-#    ("fr", "ru"),
-#    ("de", "fr"),
-#    ("de", "ru"),
-#    ("ru", "de")
-]
 
-def back_translate(text, forw_tokenizer, forw_model, backw_tokenizer, backw_model):
-    forward_input = forw_tokenizer.encode(text, return_tensors="pt")
-    forward_output = forw_model.generate(forward_input)
-    forward_translation = forw_tokenizer.decode(forward_output[0], skip_special_tokens=True)
+def replace_words_with_word_embeddings(tokens, model, percentage=0.2):
+    tmp_tokens = tokens.copy()
+    num_words_to_replace = int(len(tmp_tokens) * percentage)
+    words_to_replace = random.sample(range(len(tmp_tokens)), num_words_to_replace)
 
-    backward_input = backw_tokenizer.encode(forward_translation, return_tensors="pt")
-    backward_output = backw_model.generate(backward_input)
-    backward_translation = backw_tokenizer.decode(backward_output[0], skip_special_tokens=True)
+    for idx in words_to_replace:
+        word = tmp_tokens[idx]
+        try:
+            similar_words = model.most_similar(word, topn=3)
+            similar_words = [w for w, _ in similar_words if w.lower() != word.lower()]
 
-    return backward_translation
-
-def multiple_back_translate(text, first_forw_tokenizer, first_forw_model, second_forw_tokenizer, second_forw_model, second_backw_tokenizer, second_backw_model, first_backw_tokenizer, first_backw_model):
-    first_forward_input = first_forw_tokenizer.encode(text, return_tensors="pt")
-    first_forward_output = first_forw_model.generate(first_forward_input)
-    first_forward_translation = first_forw_tokenizer.decode(first_forward_output[0], skip_special_tokens=True)
-
-    second_forward_input = second_forw_tokenizer.encode(first_forward_translation, return_tensors="pt")
-    second_forward_output = second_forw_model.generate(second_forward_input)
-    second_forward_translation = second_forw_tokenizer.decode(second_forward_output[0], skip_special_tokens=True)
-
-    second_backward_input = second_backw_tokenizer.encode(second_forward_translation, return_tensors="pt")
-    second_backward_output = second_backw_model.generate(second_backward_input)
-    second_backward_translation = second_backw_tokenizer.decode(second_backward_output[0], skip_special_tokens=True)
-
-    first_backward_input = first_backw_tokenizer.encode(second_backward_translation, return_tensors="pt")
-    first_backward_output = first_backw_model.generate(first_backward_input)
-    first_backward_translation = first_backw_tokenizer.decode(first_backward_output[0], skip_special_tokens=True)
-
-    return first_backward_translation
-
-forward_models, forward_tokenizers = {}, {}
-backward_models, backward_tokenizers = {}, {}
-
-# for tgt_lang in tgt_languages:
-#     forward_model_name = f'Helsinki-NLP/opus-mt-en-{tgt_lang}'
-#     backward_model_name = f'Helsinki-NLP/opus-mt-{tgt_lang}-en'
-#     forward_tokenizers[("en",tgt_lang)] = MarianTokenizer.from_pretrained(forward_model_name)
-#     forward_models[("en",tgt_lang)] = MarianMTModel.from_pretrained(forward_model_name)
-#     backward_tokenizers[(tgt_lang, "en")] = MarianTokenizer.from_pretrained(backward_model_name)
-#     backward_models[(tgt_lang, "en")] = MarianMTModel.from_pretrained(backward_model_name)
-#
-# for tgt_lang_1, tgt_lang_2 in language_combinations:
-#     forward_model_name = f'Helsinki-NLP/opus-mt-{tgt_lang_1}-{tgt_lang_2}'
-#     backward_model_name = f'Helsinki-NLP/opus-mt-{tgt_lang_2}-{tgt_lang_1}'
-#     forward_tokenizers[(tgt_lang_1, tgt_lang_2)] = MarianTokenizer.from_pretrained(forward_model_name)
-#     forward_models[(tgt_lang_1, tgt_lang_2)] = MarianMTModel.from_pretrained(forward_model_name)
-#     backward_tokenizers[(tgt_lang_2, tgt_lang_1)] = MarianTokenizer.from_pretrained(backward_model_name)
-#     backward_models[(tgt_lang_2, tgt_lang_1)] = MarianMTModel.from_pretrained(backward_model_name)
+            if similar_words:
+                new_word = np.random.choice(similar_words)
+                tmp_tokens[idx] = new_word
+        except KeyError:
+            continue
+    return " ".join(tmp_tokens)
 
 
-translation_cache = {}
+class BackTranslation:
+    def __init__(self, tgt_languages, tgt_lang_combinations=None):
+        self.forward_models, self.forward_tokenizers = {}, {}
+        self.backward_models, self.backward_tokenizers = {}, {}
+        self.tgt_languages = tgt_languages
+        self.tgt_lang_combinations = tgt_lang_combinations
+        self.translation_cache = {}
+        for tgt_lang in tgt_languages:
+            forward_model_name = f'Helsinki-NLP/opus-mt-en-{tgt_lang}'
+            backward_model_name = f'Helsinki-NLP/opus-mt-{tgt_lang}-en'
+            self.forward_tokenizers[("en", tgt_lang)] = MarianTokenizer.from_pretrained(forward_model_name)
+            self.forward_models[("en", tgt_lang)] = MarianMTModel.from_pretrained(forward_model_name)
+            self.backward_tokenizers[(tgt_lang, "en")] = MarianTokenizer.from_pretrained(backward_model_name)
+            self.backward_models[(tgt_lang, "en")] = MarianMTModel.from_pretrained(backward_model_name)
 
-def translate_tweet(tweet, tgt_lang, second_tgt_lang=None):
-    cache_key = (tweet, tgt_lang, second_tgt_lang) if second_tgt_lang else (tweet, tgt_lang)
+    def back_translate(self, text, forw_tokenizer, forw_model, backw_tokenizer, backw_model):
+        forward_input = forw_tokenizer.encode(text, return_tensors="pt")
+        forward_output = forw_model.generate(forward_input)
+        forward_translation = forw_tokenizer.decode(forward_output[0], skip_special_tokens=True)
 
-    if cache_key in translation_cache:
-        return translation_cache[cache_key]
-    else:
-        if second_tgt_lang:
-            translation = multiple_back_translate(
-                tweet,
-                forward_tokenizers[("en", tgt_lang)],
-                forward_models[("en", tgt_lang)],
-                forward_tokenizers[(tgt_lang, second_tgt_lang)],
-                forward_models[(tgt_lang, second_tgt_lang)],
-                backward_tokenizers[(second_tgt_lang, tgt_lang)],
-                backward_models[(second_tgt_lang, tgt_lang)],
-                backward_tokenizers[(tgt_lang, "en")],
-                backward_models[(tgt_lang, "en")],
-            )
+        backward_input = backw_tokenizer.encode(forward_translation, return_tensors="pt")
+        backward_output = backw_model.generate(backward_input)
+        backward_translation = backw_tokenizer.decode(backward_output[0], skip_special_tokens=True)
+
+        return backward_translation
+
+    def multiple_back_translate(self, text, first_forw_tokenizer, first_forw_model, second_forw_tokenizer,
+                                second_forw_model, second_backw_tokenizer, second_backw_model, first_backw_tokenizer,
+                                first_backw_model):
+        first_forward_input = first_forw_tokenizer.encode(text, return_tensors="pt")
+        first_forward_output = first_forw_model.generate(first_forward_input)
+        first_forward_translation = first_forw_tokenizer.decode(first_forward_output[0], skip_special_tokens=True)
+
+        second_forward_input = second_forw_tokenizer.encode(first_forward_translation, return_tensors="pt")
+        second_forward_output = second_forw_model.generate(second_forward_input)
+        second_forward_translation = second_forw_tokenizer.decode(second_forward_output[0], skip_special_tokens=True)
+
+        second_backward_input = second_backw_tokenizer.encode(second_forward_translation, return_tensors="pt")
+        second_backward_output = second_backw_model.generate(second_backward_input)
+        second_backward_translation = second_backw_tokenizer.decode(second_backward_output[0], skip_special_tokens=True)
+
+        first_backward_input = first_backw_tokenizer.encode(second_backward_translation, return_tensors="pt")
+        first_backward_output = first_backw_model.generate(first_backward_input)
+        first_backward_translation = first_backw_tokenizer.decode(first_backward_output[0], skip_special_tokens=True)
+
+        return first_backward_translation
+
+    def translate_tweet(self, tweet, tgt_lang, second_tgt_lang=None):
+        cache_key = (tweet, tgt_lang, second_tgt_lang) if second_tgt_lang else (tweet, tgt_lang)
+
+        if cache_key in self.translation_cache:
+            return self.translation_cache[cache_key]
         else:
-            translation = back_translate(
-                tweet,
-                forward_tokenizers[("en", tgt_lang)],
-                forward_models[("en", tgt_lang)],
-                backward_tokenizers[(tgt_lang, "en")],
-                backward_models[(tgt_lang, "en")],
-            )
-        translation_cache[cache_key] = translation
-        return translation
+            if second_tgt_lang:
+                translation = self.multiple_back_translate(
+                    tweet,
+                    self.forward_tokenizers[("en", tgt_lang)],
+                    self.forward_models[("en", tgt_lang)],
+                    self.forward_tokenizers[(tgt_lang, second_tgt_lang)],
+                    self.forward_models[(tgt_lang, second_tgt_lang)],
+                    self.backward_tokenizers[(second_tgt_lang, tgt_lang)],
+                    self.backward_models[(second_tgt_lang, tgt_lang)],
+                    self.backward_tokenizers[(tgt_lang, "en")],
+                    self.backward_models[(tgt_lang, "en")],
+                )
+            else:
+                translation = self.back_translate(
+                    tweet,
+                    self.forward_tokenizers[("en", tgt_lang)],
+                    self.forward_models[("en", tgt_lang)],
+                    self.backward_tokenizers[(tgt_lang, "en")],
+                    self.backward_models[(tgt_lang, "en")],
+                )
+            self.translation_cache[cache_key] = translation
+            return translation
 
-method_mapping={
-    "synonyms": replace_words_with_synonyms,
-    "back_translation": translate_tweet
-}
+    # for tgt_lang_1, tgt_lang_2 in language_combinations:
+    #     forward_model_name = f'Helsinki-NLP/opus-mt-{tgt_lang_1}-{tgt_lang_2}'
+    #     backward_model_name = f'Helsinki-NLP/opus-mt-{tgt_lang_2}-{tgt_lang_1}'
+    #     forward_tokenizers[(tgt_lang_1, tgt_lang_2)] = MarianTokenizer.from_pretrained(forward_model_name)
+    #     forward_models[(tgt_lang_1, tgt_lang_2)] = MarianMTModel.from_pretrained(forward_model_name)
+    #     backward_tokenizers[(tgt_lang_2, tgt_lang_1)] = MarianTokenizer.from_pretrained(backward_model_name)
+    #     backward_models[(tgt_lang_2, tgt_lang_1)] = MarianMTModel.from_pretrained(backward_model_name)
+
+
+class GPT2:
+    def __init__(self):
+        self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        self.model = GPT2LMHeadModel.from_pretrained("gpt2")
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+
+    def generate_synthetic_data_with_gpt(self, tweet_token, seed_percent=0.2, ):
+        tokenizer = self.tokenizer
+        model = self.model
+        length_of_seed_tokens = int(len(tweet_token) * seed_percent)
+        seed = " ".join(tweet_token[0:length_of_seed_tokens])
+        input_text = tokenizer.encode(seed, return_tensors="pt", padding=True)
+
+        output = model.generate(input_text, max_length=len(tweet_token) * 3, num_return_sequences=1, do_sample=True,
+                                temperature=0.7, pad_token_id=tokenizer.eos_token_id)
+        generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
+        generated_text = generated_text.replace("\n", "")
+        return generated_text
