@@ -15,10 +15,13 @@ label_mapping = {
     'neutral': 1,
     'positive': 2
 }
+
+
 def flat_accuracy(preds, labels):
     pred_flat = np.argmax(preds, axis=1).flatten()
     labels_flat = labels.flatten()
     return np.sum(pred_flat == labels_flat) / len(labels_flat)
+
 
 def format_time(elapsed):
     """
@@ -127,6 +130,7 @@ def eval_model(
         }
     )
 
+
 def k_cross_fold_validation(dataset: TensorDataset, k=5, epochs=2, batch_size=16, device="cpu"):
     kfold = KFold(n_splits=k, shuffle=True)
     for fold, (train_ids, val_ids) in enumerate(kfold.split(dataset)):
@@ -168,7 +172,8 @@ def k_cross_fold_validation(dataset: TensorDataset, k=5, epochs=2, batch_size=16
             train_model(model, train_dataloader, optimizer, scheduler, device)
             print("")
             print("Running Validation...")
-            eval_model(model, validation_dataloader,training_stats, device)
+            eval_model(model, validation_dataloader, training_stats, device)
+
 
 def evaluation(train_dataloader, validation_dataloader, epochs=2, device="cpu"):
     training_stats = []
@@ -198,21 +203,23 @@ def evaluation(train_dataloader, validation_dataloader, epochs=2, device="cpu"):
         print("Running Validation...")
         eval_model(model, validation_dataloader, training_stats, device)
 
-def tweet_pipeline(tokenizer,tweet, input_ids, attention_masks):
+
+def tweet_pipeline(tokenizer, tweet, input_ids, attention_masks):
     encoded_dict = tokenizer.encode_plus(tweet,
-                                         add_special_tokens = True,
-                                         padding= 'max_length',
-                                         return_attention_mask = True,
-                                         return_tensors = 'pt')
+                                         add_special_tokens=True,
+                                         padding='max_length',
+                                         return_attention_mask=True,
+                                         return_tensors='pt')
     input_ids.append(encoded_dict["input_ids"])
     attention_masks.append(encoded_dict["attention_mask"])
 
-def preprocess(data,batch_size):
+
+def preprocess(data, batch_size):
     input_ids = []
     attention_masks = []
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     labels = data["Label"].apply(lambda x: label_mapping[x]).tolist()
-    data["Tweet"].apply(lambda tweet: tweet_pipeline(tokenizer,tweet,input_ids,attention_masks))
+    data["Tweet"].apply(lambda tweet: tweet_pipeline(tokenizer, tweet, input_ids, attention_masks))
     input_ids = torch.cat(input_ids, dim=0)
     attention_masks = torch.cat(attention_masks, dim=0)
     labels = torch.tensor(labels)
