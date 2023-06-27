@@ -51,6 +51,8 @@ def generate_synthetic_data(data, synthetic_method, coverage_percentage=0.5, bac
                                                   coverage_percentage)
     elif synthetic_method == "gp2":
         return gpt2.generate_synthetic_data_with_gpt(data["Tweet_Token"].values[0], seed_percentage)
+    elif synthetic_method == "random_reorder":
+        return random_reorder(data["Tweet_Token"].values[0], coverage_percentage)
 
     return data["Tweet"].values[0]
 
@@ -74,7 +76,7 @@ def fill_missing_labels(data,
     data["Tweet_Token"] = data["Tweet"].apply(token_pipeline)
     label_counts = data['Label'].value_counts()
     max_label_count = max(label_counts)
-    print(max(label_counts))
+    print(label_counts)
     training_dataframes = [data]
 
     back_translation = BackTranslation(tgt_languages) if method == "back_translation" else None
@@ -82,6 +84,7 @@ def fill_missing_labels(data,
     for label in label_counts.index:
         fill_count = max_label_count - label_counts[label]
         label_data = data[data['Label'] == label]
+        print(f"Fill {fill_count} for label {label}")
         if fill_count > 0:
             synth_label_data = []
             for i in range(fill_count):
@@ -93,7 +96,6 @@ def fill_missing_labels(data,
                 synth_label_data.append([synth_tweet, label])
             synth_label_data = pd.DataFrame(synth_label_data, columns=["Tweet", "Label"])
             training_dataframes.append(synth_label_data)
-        print(label, label_counts[label])
     return pd.concat(training_dataframes)
 
 
@@ -135,6 +137,17 @@ def replace_words_with_synonyms(tweet_tokens, percentage=0.2, similarity_thresho
             tmp_tokens[rand_index] = random.choice(list(similar_synonyms))
 
     return ' '.join(tmp_tokens)
+
+
+def random_reorder(tweet_tokens, percentage=0.2):
+    tmp_tokens = tweet_tokens.copy()
+    num_to_replace = int(len(tmp_tokens) * percentage)
+    words_to_replace = random.sample(range(len(tmp_tokens)), num_to_replace)
+    for idx in words_to_replace:
+        word = tmp_tokens[idx]
+        tmp_tokens.pop(idx)
+        tmp_tokens.insert(random.randint(0, len(tmp_tokens)), word)
+    return " ".join(tmp_tokens)
 
 
 def replace_words_with_word_embeddings(tokens, model, percentage=0.2):
