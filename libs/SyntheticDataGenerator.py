@@ -176,6 +176,7 @@ class BackTranslation:
         self.tgt_languages = tgt_languages
         self.tgt_lang_combinations = tgt_lang_combinations
         self.translation_cache = {}
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         for tgt_lang in tgt_languages:
             forward_model_name = f'Helsinki-NLP/opus-mt-en-{tgt_lang}'
             backward_model_name = f'Helsinki-NLP/opus-mt-{tgt_lang}-en'
@@ -186,10 +187,14 @@ class BackTranslation:
 
     def back_translate(self, text, forw_tokenizer, forw_model, backw_tokenizer, backw_model):
         forward_input = forw_tokenizer.encode(text, return_tensors="pt")
+        forward_input = forward_input.to(self.device)
+        forw_model.to(self.device)
         forward_output = forw_model.generate(forward_input)
         forward_translation = forw_tokenizer.decode(forward_output[0], skip_special_tokens=True)
 
         backward_input = backw_tokenizer.encode(forward_translation, return_tensors="pt")
+        backward_input = backward_input.to(self.device)
+        backw_model.to(self.device)
         backward_output = backw_model.generate(backward_input)
         backward_translation = backw_tokenizer.decode(backward_output[0], skip_special_tokens=True)
 
