@@ -49,7 +49,7 @@ def generate_synthetic_data(data, synthetic_method, coverage_percentage=0.5, bac
     elif synthetic_method == "word_embedding":
         return replace_words_with_word_embeddings(data["Tweet_Token"].values[0], word_embedding_model,
                                                   coverage_percentage)
-    elif synthetic_method == "gp2":
+    elif synthetic_method == "gpt2":
         return gpt2.generate_synthetic_data_with_gpt(data["Tweet_Token"].values[0], seed_percentage)
     elif synthetic_method == "random_reorder":
         return random_reorder(data["Tweet_Token"].values[0], coverage_percentage)
@@ -80,7 +80,7 @@ def fill_missing_labels(data,
     training_dataframes = [data]
 
     back_translation = BackTranslation(tgt_languages) if method == "back_translation" else None
-    gp2 = GPT2() if method == "gp2" else None
+    gp2 = GPT2() if method == "gpt2" else None
     for label in label_counts.index:
         fill_count = max_label_count - label_counts[label]
         label_data = data[data['Label'] == label]
