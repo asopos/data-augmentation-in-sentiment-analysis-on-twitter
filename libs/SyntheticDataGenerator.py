@@ -6,6 +6,7 @@ from transformers import MarianMTModel, MarianTokenizer, GPT2LMHeadModel, GPT2To
 import numpy as np
 import pandas as pd
 import random
+import torch
 
 tweet_tokenizer = TweetTokenizer()
 
@@ -245,13 +246,16 @@ class GPT2:
         self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
         self.model = GPT2LMHeadModel.from_pretrained("gpt2")
         self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def generate_synthetic_data_with_gpt(self, tweet_token, seed_percent=0.2, ):
         tokenizer = self.tokenizer
         model = self.model
+        model.to(self.device)
         length_of_seed_tokens = int(len(tweet_token) * seed_percent)
         seed = " ".join(tweet_token[0:length_of_seed_tokens])
         input_text = tokenizer.encode(seed, return_tensors="pt", padding=True)
+        input_text = input_text.to(self.device)
 
         output = model.generate(input_text, max_length=len(tweet_token) * 3, num_return_sequences=1, do_sample=True,
                                 temperature=0.7, pad_token_id=tokenizer.eos_token_id)
