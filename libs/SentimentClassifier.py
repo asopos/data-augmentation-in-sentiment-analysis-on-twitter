@@ -6,7 +6,7 @@ import time
 from torch.optim import AdamW
 from sklearn.model_selection import KFold
 from torch.utils.data import TensorDataset, DataLoader, Subset, RandomSampler, SequentialSampler
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, classification_report
 
 logging.set_verbosity_error()
 
@@ -87,6 +87,9 @@ def eval_model(
     total_eval_loss = 0
     test_f1 = 0.0
     confusion_matrix = torch.zeros((3, 3))
+    all_preds = []
+    all_labels = []
+
     for batch in eval_dataloader:
         b_input_ids = batch[0].to(device)
         b_input_mask = batch[1].to(device)
@@ -105,13 +108,17 @@ def eval_model(
             logits = logits.detach().cpu().numpy()
             label_ids = b_labels.to('cpu').numpy()
             test_f1 += f1_score(label_ids, preds, average='macro')
+            all_preds.extend(preds)
+            all_labels.extend(label_ids)
             for t, p in zip(b_labels.view(-1), preds_torch.view(-1)):
                 confusion_matrix[t.long(), p.long()] += 1
         total_eval_loss += loss.item()
         total_eval_accuracy += flat_accuracy(logits, label_ids)
+    print(classification_report(all_labels, all_preds, zero_division=0))
     avg_val_accuracy = total_eval_accuracy / len(eval_dataloader)
     avg_val_f1 = test_f1 / len(eval_dataloader)
     avg_val_loss = total_eval_loss / len(eval_dataloader)
+
 
     validation_time = format_time(time.time() - t0)
 
