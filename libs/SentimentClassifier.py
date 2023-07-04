@@ -114,7 +114,7 @@ def eval_model(
             all_labels.extend(label_ids)
         total_eval_loss += loss.item()
         total_eval_accuracy += flat_accuracy(logits, label_ids)
-    print(classification_report(all_labels, all_preds, zero_division=0))
+    print(classification_report(all_labels, all_preds, zero_division=0, target_names=label_mapping.keys()))
     show_confusion_matrix(confusion_matrix(all_labels, all_preds))
     avg_val_accuracy = total_eval_accuracy / len(eval_dataloader)
     avg_val_f1 = test_f1 / len(eval_dataloader)
@@ -235,9 +235,9 @@ def preprocess(data, batch_size):
 
 def show_confusion_matrix(confusion_matrix):
     class_mapping = {
-        0: 'neutral',
-        1: 'positive',
-        2: 'negative'
+        0: 'negative',
+        1: 'neutral',
+        2: 'positive'
     }
     plt.figure(figsize=(15, 10))
 
