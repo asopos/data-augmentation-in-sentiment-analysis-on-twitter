@@ -7,6 +7,9 @@ from torch.optim import AdamW
 from sklearn.model_selection import KFold
 from torch.utils.data import TensorDataset, DataLoader, Subset, RandomSampler, SequentialSampler
 from sklearn.metrics import f1_score, classification_report, confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
 
 logging.set_verbosity_error()
 
@@ -112,17 +115,15 @@ def eval_model(
         total_eval_loss += loss.item()
         total_eval_accuracy += flat_accuracy(logits, label_ids)
     print(classification_report(all_labels, all_preds, zero_division=0))
-    print(confusion_matrix(all_labels, all_preds))
+    show_confusion_matrix(confusion_matrix(all_labels, all_preds))
     avg_val_accuracy = total_eval_accuracy / len(eval_dataloader)
     avg_val_f1 = test_f1 / len(eval_dataloader)
     avg_val_loss = total_eval_loss / len(eval_dataloader)
-
 
     validation_time = format_time(time.time() - t0)
 
     print(f"  Accuracy: {avg_val_accuracy:.2f}")
     print(f"  F1 Score: {avg_val_f1:.2f}")
-    print(confusion_matrix)
     print(f"  Validation Loss: {avg_val_loss:.2f}")
     print(f"  Validation took: {validation_time}")
     training_stats.append(
@@ -230,3 +231,21 @@ def preprocess(data, batch_size):
     labels = torch.tensor(labels)
     dataset = TensorDataset(input_ids, attention_masks, labels)
     return DataLoader(dataset, sampler=RandomSampler(dataset), batch_size=batch_size)
+
+
+def show_confusion_matrix(confusion_matrix):
+    class_mapping = {
+        0: 'neutral',
+        1: 'positive',
+        2: 'negative'
+    }
+    plt.figure(figsize=(15, 10))
+
+    class_names = list(class_mapping.values())
+    df_cm = pd.DataFrame(confusion_matrix, index=class_names, columns=class_names).astype(int)
+    heatmap = sns.heatmap(df_cm, annot=True, fmt="d")
+
+    heatmap.yaxis.set_ticklabels(heatmap.yaxis.get_ticklabels(), rotation=0, ha='right', fontsize=15)
+    heatmap.xaxis.set_ticklabels(heatmap.xaxis.get_ticklabels(), rotation=45, ha='right', fontsize=15)
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
