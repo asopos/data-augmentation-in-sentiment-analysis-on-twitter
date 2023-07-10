@@ -6,7 +6,7 @@ import time
 from torch.optim import AdamW
 from sklearn.model_selection import KFold
 from torch.utils.data import TensorDataset, DataLoader, Subset, RandomSampler, SequentialSampler
-from sklearn.metrics import f1_score, classification_report, confusion_matrix
+from sklearn.metrics import f1_score, classification_report, confusion_matrix, matthews_corrcoef
 import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -49,7 +49,7 @@ def train_model(
     total_train_loss = 0
     for step, batch in enumerate(train_dataloader):
         elapsed = format_time(time.time() - t0)
-#        if step % 40 == 0 and not step == 0:
+        #        if step % 40 == 0 and not step == 0:
         print(f"Batch {step} of {len(train_dataloader)}. Elapsed: {elapsed}")
         b_input_ids = batch[0].to(device)
         b_input_mask = batch[1].to(device)
@@ -116,6 +116,7 @@ def eval_model(
         total_eval_accuracy += flat_accuracy(logits, label_ids)
     print(classification_report(all_labels, all_preds, zero_division=0, target_names=label_mapping.keys()))
     show_confusion_matrix(confusion_matrix(all_labels, all_preds))
+    mcc = matthews_corrcoef(all_labels, all_preds)
     avg_val_accuracy = total_eval_accuracy / len(eval_dataloader)
     avg_val_f1 = test_f1 / len(eval_dataloader)
     avg_val_loss = total_eval_loss / len(eval_dataloader)
@@ -124,6 +125,7 @@ def eval_model(
 
     print(f"  Accuracy: {avg_val_accuracy:.2f}")
     print(f"  F1 Score: {avg_val_f1:.2f}")
+    print(f"  MCC Score: {mcc:.2f}")
     print(f"  Validation Loss: {avg_val_loss:.2f}")
     print(f"  Validation took: {validation_time}")
     training_stats.append(
@@ -224,7 +226,7 @@ def preprocess(data, batch_size):
     input_ids = []
     attention_masks = []
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-    labels = data["Label"].apply(lambda x: label_mapping[x]).tolist()
+    labels = data["Label"].apply(lambda x: label_mapping[x.lower()]).tolist()
     data["Tweet"].apply(lambda tweet: tweet_pipeline(tokenizer, tweet, input_ids, attention_masks))
     input_ids = torch.cat(input_ids, dim=0)
     attention_masks = torch.cat(attention_masks, dim=0)
