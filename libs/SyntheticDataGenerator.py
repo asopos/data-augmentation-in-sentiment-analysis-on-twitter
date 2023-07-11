@@ -7,12 +7,12 @@ import numpy as np
 import pandas as pd
 import random
 import torch
-import tensorflow_hub as hub
+from gensim.models import KeyedVectors
 
 tweet_tokenizer = TweetTokenizer()
 
 stop_words = set(stopwords.words('english'))
-embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder/4")
+word2vec_model = KeyedVectors.load("H:\\word2vec-google-news-300")
 
 
 def token_pipeline(tweet):
@@ -113,7 +113,7 @@ def fill_synthetic_data_percentage(data,
                                                                        seed_percentage, use_synonym_threshold)
         overall_synth_word_count += synth_count
         overall_word_count += len(sample["Tweet_Token"].values[0])
-        similarity = semantic_similarity(sample["Tweet"].values[0], synth_tweet)
+        similarity = semantic_similarity(sample["Tweet_Token"].values[0], synth_tweet)
 
         label = sample["Label"].values[0]
         synth_data.append([synth_tweet, label, similarity])
@@ -152,7 +152,7 @@ def fill_missing_labels(data,
                                                                                seed_percentage, use_synonym_threshold)
                 overall_synth_word_count += synth_count
                 overall_word_count += len(sample["Tweet_Token"].values[0])
-                similarity = semantic_similarity(sample["Tweet"].values[0], synth_tweet)
+                similarity = semantic_similarity(sample["Tweet_Token"].values[0], synth_tweet)
                 label = sample["Label"].values[0]
                 synth_label_data.append([synth_tweet, label, similarity])
             synth_label_data = pd.DataFrame(synth_label_data, columns=["Tweet", "Label", "Similarity"])
@@ -233,9 +233,10 @@ def random_reorder(tweet_tokens, percentage=0.2):
 
 
 def semantic_similarity(original_tweet, synthetic_tweet):
-    original_embedding = embed([original_tweet])
-    synthetic_embedding = embed([synthetic_tweet])
-    return np.inner(original_embedding, synthetic_embedding)[0][0]
+    synthetic_tweet = token_pipeline(synthetic_tweet)
+
+    similarity = word2vec_model.wmdistance(original_tweet, synthetic_tweet)
+    return similarity
 
 
 def replace_words_with_word_embeddings(tokens, model, percentage=0.2):
