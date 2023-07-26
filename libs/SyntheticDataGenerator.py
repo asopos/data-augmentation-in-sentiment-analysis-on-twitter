@@ -6,14 +6,17 @@ from transformers import MarianMTModel, MarianTokenizer, GPT2LMHeadModel, GPT2To
 import numpy as np
 import pandas as pd
 import random
+import torch_directml
 import torch
-from gensim.models import KeyedVectors
+from gensim.models import KeyedVectors, fasttext
+import string
+import threading
 
 tweet_tokenizer = TweetTokenizer()
 
 stop_words = set(stopwords.words('english'))
 word2vec_model = KeyedVectors.load("H:\\word2vec-google-news-300")
-
+lock = threading.Lock()
 
 def token_pipeline(tweet):
     # Lowercase the tweet
@@ -41,35 +44,36 @@ def token_pipeline(tweet):
 
 
 def generate_synthetic_data(data, synthetic_method, coverage_percentage=0.5, back_translate=None,
-                            word_embedding_model=None, tgt_languages=None, gpt2=None, seed_percentage=0.5,
+                            word_embeddings=None, gpt2=None, seed_percentage=0.5,
                             use_synonym_threshold=False):
+    word_count = len(data["Tweet_Token"])
     if synthetic_method == "synonyms":
-        return replace_words_with_synonyms(tweet_tokens=data["Tweet_Token"].values[0], percentage=coverage_percentage,
+        return replace_words_with_synonyms(tweet_tokens=data["Tweet_Token"], percentage=coverage_percentage,
                                            use_synonym_threshold=use_synonym_threshold)
-    elif synthetic_method == "back_translation":
-        tgt_lang = random.choice(tgt_languages)
-        return back_translate.translate_tweet(data["Tweet"].values[0], tgt_lang)
-    elif synthetic_method == "word_embedding":
-        return replace_words_with_word_embeddings(data["Tweet_Token"].values[0], word_embedding_model,
-                                                  coverage_percentage)
+    elif back_translate is not None:
+        return back_translate.translate_tweet(data["Tweet"]), word_count, word_count
+    elif word_embeddings is not None:
+        return word_embeddings.replace_words_with_word_embeddings(data["Tweet_Token"],
+                                                                  coverage_percentage)
     elif synthetic_method == "gpt2":
-        return gpt2.generate_synthetic_data_with_gpt(data["Tweet_Token"].values[0], seed_percentage)
+        return gpt2.generate_synthetic_data_with_gpt(data["Tweet_Token"],
+                                                     seed_percentage), word_count / 2, word_count
     elif synthetic_method == "random_reorder":
-        return random_reorder(data["Tweet_Token"].values[0], coverage_percentage)
+        return random_reorder(data["Tweet_Token"],
+                              coverage_percentage), word_count * coverage_percentage, word_count
 
-    return data["Tweet"].values[0]
+    return data["Tweet"], word_count, word_count
 
 
 def fill_synthetic_data_count(data,
                               method,
                               count=1000,
                               coverage_percentage=0.5,
-                              tgt_languages=None,
                               word_embedding_model=None,
                               seed_percentage=0.5,
                               use_synonym_threshold=False):
     data["Tweet_Token"] = data["Tweet"].apply(token_pipeline)
-    back_translation = BackTranslation(tgt_languages) if method == "back_translation" else None
+    back_translation = BackTranslation(method) if method == "back_translation" else None
     gp2 = GPT2() if method == "gpt2" else None
     synth_data = []
     overall_word_count = 0
@@ -78,12 +82,12 @@ def fill_synthetic_data_count(data,
         sample = data.sample()
         synth_tweet, synth_count, word_count = generate_synthetic_data(sample, method, coverage_percentage,
                                                                        back_translation,
-                                                                       word_embedding_model, tgt_languages, gp2,
+                                                                       word_embedding_model, gp2,
                                                                        seed_percentage, use_synonym_threshold)
         overall_synth_word_count += synth_count
-        overall_word_count += len(sample["Tweet_Token"].values[0])
+        overall_word_count += len(sample["Tweet_Token"])
 
-        label = sample["Label"].values[0]
+        label = sample["Label"]
         synth_data.append([synth_tweet, label])
     synth_df = pd.DataFrame(synth_data, columns=["Tweet", "Label"])
     synth_ratio = overall_synth_word_count / overall_word_count
@@ -92,55 +96,57 @@ def fill_synthetic_data_count(data,
 
 def fill_synthetic_data_percentage(data,
                                    method,
+                                   data_source_typ="real",
                                    percentage=0.5,
                                    coverage_percentage=0.5,
-                                   tgt_languages=None,
-                                   word_embedding_model=None,
                                    seed_percentage=0.5,
                                    use_synonym_threshold=False):
-    synth_length = int(len(data) * percentage)
-    data["Tweet_Token"] = data["Tweet"].apply(token_pipeline)
-    back_translation = BackTranslation(tgt_languages) if method == "back_translation" else None
+    data_source = data[data['Synth_Type'] == data_source_typ].copy()
+    synth_length = int(len(data_source) * percentage)
+    data_source["Tweet_Token"] = data_source["Tweet"].apply(token_pipeline)
+    back_translation = BackTranslation(method) if method in ["ru", "de", "es", "fr", "jap"] else None
     gp2 = GPT2() if method == "gpt2" else None
+    word_embeddings = WordEmbeddings(method) if method in ["word2vec", "fasttext", "glove"] else None
     synth_data = []
-    overall_word_count = 0
-    overall_synth_word_count = 0
     for i in range(synth_length):
-        sample = data.sample()
+        sample = data_source.iloc[i]
         synth_tweet, synth_count, word_count = generate_synthetic_data(sample, method, coverage_percentage,
                                                                        back_translation,
-                                                                       word_embedding_model, tgt_languages, gp2,
+                                                                       word_embeddings, gp2,
                                                                        seed_percentage, use_synonym_threshold)
-        overall_synth_word_count += synth_count
-        overall_word_count += len(sample["Tweet_Token"].values[0])
-        similarity = semantic_similarity(sample["Tweet_Token"].values[0], synth_tweet)
-
-        label = sample["Label"].values[0]
-        synth_data.append([synth_tweet, label, similarity])
-    synth_df = pd.DataFrame(synth_data, columns=["Tweet", "Label", "Similarity"])
-    synth_ratio = overall_synth_word_count / overall_word_count
-    return pd.concat([data, synth_df]), synth_ratio
+        similarity = semantic_similarity(sample["Tweet_Token"], synth_tweet)
+        if i % 100 == 0:
+            print(i)
+        label = sample["Label"]
+        tweet_id = sample["Tweet_ID"]
+        synth_data.append([tweet_id, synth_tweet, label, similarity, method, True, synth_count])
+    synth_df = pd.DataFrame(synth_data,
+                            columns=["Tweet_ID", "Tweet", "Label", "Similarity", "Synth_Type", "Is_Synthetic",
+                                     "Synth_Count"])
+    synth_df["Is_Synthetic"] = synth_df["Is_Synthetic"].astype(bool)
+    return pd.concat([data, synth_df])
 
 
 def fill_missing_labels(data,
                         method,
+                        data_source_type="real",
                         coverage_percentage=0.5,
                         tgt_languages=None,
                         word_embedding_model=None,
                         seed_percentage=0.5,
                         use_synonym_threshold=False):
-    data["Tweet_Token"] = data["Tweet"].apply(token_pipeline)
-    label_counts = data['Label'].value_counts()
+    data_source = data[data['Synth_Type'] == data_source_type].copy()
+    data_source["Tweet_Token"] = data_source["Tweet"].apply(token_pipeline)
+    label_counts = data_source['Label'].value_counts()
     max_label_count = max(label_counts)
     print(label_counts)
     training_dataframes = [data]
-    overall_word_count = 0
-    overall_synth_word_count = 0
+
     back_translation = BackTranslation(tgt_languages) if method == "back_translation" else None
     gp2 = GPT2() if method == "gpt2" else None
     for label in label_counts.index:
         fill_count = max_label_count - label_counts[label]
-        label_data = data[data['Label'] == label]
+        label_data = data_source[data_source['Label'] == label]
         print(f"Fill {fill_count} for label {label}")
         if fill_count > 0:
             synth_label_data = []
@@ -150,15 +156,18 @@ def fill_missing_labels(data,
                                                                                back_translation,
                                                                                word_embedding_model, tgt_languages, gp2,
                                                                                seed_percentage, use_synonym_threshold)
-                overall_synth_word_count += synth_count
-                overall_word_count += len(sample["Tweet_Token"].values[0])
-                similarity = semantic_similarity(sample["Tweet_Token"].values[0], synth_tweet)
-                label = sample["Label"].values[0]
-                synth_label_data.append([synth_tweet, label, similarity])
-            synth_label_data = pd.DataFrame(synth_label_data, columns=["Tweet", "Label", "Similarity"])
+
+                similarity = semantic_similarity(sample["Tweet_Token"], synth_tweet)
+                label = sample["Label"]
+                tweet_id = sample["Tweet_ID"]
+                synth_label_data.append([tweet_id, synth_tweet, label, similarity, method, True, synth_count])
+            synth_label_data = pd.DataFrame(synth_label_data,
+                                            columns=["Tweet_ID", "Tweet", "Label", "Similarity", "Synth_Type",
+                                                     "Is_Synthetic", "Synth_Count"])
+            synth_label_data["Is_Synthetic"] = synth_label_data["Is_Synthetic"].astype(bool)
             training_dataframes.append(synth_label_data)
-    synth_ratio = overall_synth_word_count / overall_word_count
-    return pd.concat(training_dataframes), synth_ratio
+
+    return pd.concat(training_dataframes)
 
 
 def pos_mapping(tag):
@@ -177,7 +186,7 @@ def pos_mapping(tag):
 def replace_words_with_synonyms(tweet_tokens, percentage=0.2, similarity_threshold=0.2, use_synonym_threshold=False):
     token_replaced = 0
     tmp_tokens = tweet_tokens.copy()
-    tmp_tokens = [token for token in tmp_tokens if token not in stop_words]
+    tmp_tokens = [token for token in tmp_tokens if token not in stop_words and token not in string.punctuation]
     tokens_pos = [pos[1] for pos in pos_tag(tmp_tokens)]
     num_to_replace = int(len(tmp_tokens) * percentage)
     if use_synonym_threshold:
@@ -261,20 +270,18 @@ def replace_words_with_word_embeddings(tokens, model, percentage=0.2):
 
 
 class BackTranslation:
-    def __init__(self, tgt_languages, tgt_lang_combinations=None):
+    def __init__(self, tgt_lang):
+        self.tgt_lang = tgt_lang
         self.forward_models, self.forward_tokenizers = {}, {}
         self.backward_models, self.backward_tokenizers = {}, {}
-        self.tgt_languages = tgt_languages
-        self.tgt_lang_combinations = tgt_lang_combinations
         self.translation_cache = {}
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        for tgt_lang in tgt_languages:
-            forward_model_name = f'Helsinki-NLP/opus-mt-en-{tgt_lang}'
-            backward_model_name = f'Helsinki-NLP/opus-mt-{tgt_lang}-en'
-            self.forward_tokenizers[("en", tgt_lang)] = MarianTokenizer.from_pretrained(forward_model_name)
-            self.forward_models[("en", tgt_lang)] = MarianMTModel.from_pretrained(forward_model_name)
-            self.backward_tokenizers[(tgt_lang, "en")] = MarianTokenizer.from_pretrained(backward_model_name)
-            self.backward_models[(tgt_lang, "en")] = MarianMTModel.from_pretrained(backward_model_name)
+        forward_model_name = f'Helsinki-NLP/opus-mt-en-{tgt_lang}'
+        backward_model_name = f'Helsinki-NLP/opus-mt-{tgt_lang}-en'
+        self.forward_tokenizers[("en", tgt_lang)] = MarianTokenizer.from_pretrained(forward_model_name)
+        self.forward_models[("en", tgt_lang)] = MarianMTModel.from_pretrained(forward_model_name)
+        self.backward_tokenizers[(tgt_lang, "en")] = MarianTokenizer.from_pretrained(backward_model_name)
+        self.backward_models[(tgt_lang, "en")] = MarianMTModel.from_pretrained(backward_model_name)
 
     def back_translate(self, text, forw_tokenizer, forw_model, backw_tokenizer, backw_model):
         forward_input = forw_tokenizer.encode(text, return_tensors="pt")
@@ -288,7 +295,6 @@ class BackTranslation:
         backw_model.to(self.device)
         backward_output = backw_model.generate(backward_input)
         backward_translation = backw_tokenizer.decode(backward_output[0], skip_special_tokens=True)
-
         return backward_translation
 
     def multiple_back_translate(self, text, first_forw_tokenizer, first_forw_model, second_forw_tokenizer,
@@ -312,7 +318,8 @@ class BackTranslation:
 
         return first_backward_translation
 
-    def translate_tweet(self, tweet, tgt_lang, second_tgt_lang=None):
+    def translate_tweet(self, tweet, second_tgt_lang=None):
+        tgt_lang = self.tgt_lang
         cache_key = (tweet, tgt_lang, second_tgt_lang) if second_tgt_lang else (tweet, tgt_lang)
 
         if cache_key in self.translation_cache:
@@ -357,7 +364,7 @@ class GPT2:
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def generate_synthetic_data_with_gpt(self, tweet_token, seed_percent=0.2, ):
+    def generate_synthetic_data_with_gpt(self, tweet_token, seed_percent=0.5):
         tokenizer = self.tokenizer
         model = self.model
         model.to(self.device)
@@ -366,8 +373,44 @@ class GPT2:
         input_text = tokenizer.encode(seed, return_tensors="pt", padding=True)
         input_text = input_text.to(self.device)
 
-        output = model.generate(input_text, max_length=len(tweet_token) * 3, num_return_sequences=1, do_sample=True,
+        output = model.generate(input_text, max_length=len(tweet_token) * 2, num_return_sequences=1, do_sample=True,
                                 temperature=0.7, pad_token_id=tokenizer.eos_token_id)
         generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
         generated_text = generated_text.replace("\n", "")
-        return generated_text, len(generated_text.split(" ")) - length_of_seed_tokens
+        return generated_text
+
+
+class WordEmbeddings:
+    def __init__(self, model_name):
+        self.cache = {}
+        if model_name == "fasttext":
+            self.model = fasttext.load_facebook_vectors(path="H:\\wiki.simple.bin")
+        elif model_name == "glove":
+            self.model = KeyedVectors.load_word2vec_format("H:\\glove.twitter.27B.200d.txt", binary=False)
+        elif model_name == "word2vec":
+            self.model = word2vec_model
+
+    def replace_words_with_word_embeddings(self, tokens, percentage=0.2):
+        tmp_tokens = tokens.copy()
+        tmp_tokens = [t for t in tmp_tokens if t not in string.punctuation and t not in stop_words]
+        num_words_to_replace = int(len(tmp_tokens) * percentage)
+        token_replaced = 0
+        words_to_replace = random.sample(range(len(tmp_tokens)), num_words_to_replace)
+
+        for idx in words_to_replace:
+            word = tmp_tokens[idx]
+            try:
+                if word in self.cache:
+                    similar_words = self.cache[word]
+                else:
+                    similar_words = self.model.most_similar(word, topn=3)
+                    self.cache[word] = similar_words
+                similar_words = [w for w, _ in similar_words if w.lower() != word.lower()]
+
+                if similar_words:
+                    new_word = np.random.choice(similar_words)
+                    tmp_tokens[idx] = new_word
+                    token_replaced += 1
+            except KeyError:
+                continue
+        return " ".join(tmp_tokens), token_replaced, len(tokens)

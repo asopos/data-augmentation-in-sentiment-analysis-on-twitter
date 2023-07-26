@@ -91,7 +91,6 @@ def eval_model(
     test_f1 = 0.0
     all_preds = []
     all_labels = []
-
     for batch in eval_dataloader:
         b_input_ids = batch[0].to(device)
         b_input_mask = batch[1].to(device)
