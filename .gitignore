@@ -132,3 +132,4 @@ dmypy.json
 output
 data/Sentiment140.csv
 data/SentiWordNet_3.0.0.txt
+figures
