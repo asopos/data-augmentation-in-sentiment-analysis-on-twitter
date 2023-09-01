@@ -51,7 +51,7 @@ def token_pipeline(tweet):
 
 
 def generate_synthetic_data(data, synthetic_method, coverage_percentage=0.5, back_translate=None,
-                            word_embeddings=None, gpt2=None, seed_percentage=0.5, similarity_threshold=0.5,
+                            word_embeddings=None, gpt2=None, similarity_threshold=0.5,
                             use_synonym_threshold=False, word_embedding_candidates=5):
     word_count = len(data["Tweet_Token"])
     if synthetic_method == "synonyms":
@@ -64,8 +64,7 @@ def generate_synthetic_data(data, synthetic_method, coverage_percentage=0.5, bac
         return word_embeddings.replace_words_with_word_embeddings(data["Tweet_Token"],
                                                                   coverage_percentage, word_embedding_candidates)
     elif synthetic_method == "gpt2":
-        return gpt2.generate_synthetic_data_with_gpt(data["Tweet_Token"],
-                                                     seed_percentage), word_count / 2, word_count, {}
+        return gpt2.generate_synthetic_data_with_gpt(data["Tweet_Token"]), word_count / 2, word_count, {}
     elif synthetic_method == "random_reorder":
         return random_reorder(data["Tweet_Token"],
                               coverage_percentage), word_count * coverage_percentage, word_count, {}
@@ -112,34 +111,33 @@ def fill_synthetic_data_percentage(data,
                                    similarity_threshold=0.5,
                                    use_synonym_threshold=False,
                                    word_embedding_candidates=5,
-                                   random_seed=None):
+                                   random_seed=None,
+                                   max_length_factor=2):
     random.seed(random_seed) if random_seed else None
     data_source = data[data['Data_Type'] == data_source_typ].copy()
     synth_length = int(len(data_source) * percentage)
     data_source["Tweet_Token"] = data_source["Tweet"].apply(token_pipeline)
     back_translation = BackTranslation(method) if method in ["ru", "de", "es", "fr", "jap"] else None
-    gp2 = GPT2() if method == "gpt2" else None
+    gp2 = GPT2(seed_percent=seed_percentage,max_length_factor=max_length_factor) if method == "gpt2" else None
     word_embeddings = WordEmbeddings(method) if method in ["word2vec", "fasttext", "glove"] else None
     synth_data = []
+    indices_to_replace = random.sample(range(len(data_source)), synth_length)
     data_type = data_type if data_type else method
-    for i in range(synth_length):
+    for idx,i in enumerate(indices_to_replace):
         sample = data_source.iloc[i]
         synth_tweet, synth_count, word_count, synonym_dict = generate_synthetic_data(data=sample, synthetic_method=method,
                                                                        coverage_percentage=coverage_percentage,
                                                                        back_translate=back_translation,
                                                                        word_embeddings=word_embeddings,
                                                                        gpt2=gp2,
-                                                                       seed_percentage=seed_percentage,
                                                                        similarity_threshold=similarity_threshold,
                                                                        use_synonym_threshold=use_synonym_threshold,
                                                                        word_embedding_candidates=word_embedding_candidates)
         similarity = semantic_similarity(sample["Tweet"], synth_tweet)
-        if i % 100 == 0:
-            print(i)
         label = sample["Label"]
-        row_count = i
+        ID = i
         tweet_id = sample["Tweet_ID"]
-        synth_data.append([tweet_id, synth_tweet, label, similarity, data_type, True, synth_count, row_count, synonym_dict, method])
+        synth_data.append([tweet_id, synth_tweet, label, similarity, data_type, True, synth_count, ID, synonym_dict, method])
     synth_df = pd.DataFrame(synth_data,
                             columns=["Tweet_ID", "Tweet", "Label", "Similarity", "Data_Type", "Is_Synthetic",
                                      "Synth_Count", "ID", "Synonym_Dict", "Method"])
@@ -154,7 +152,10 @@ def fill_missing_labels(data,
                         coverage_percentage=0.5,
                         seed_percentage=0.5,
                         similarity_threshold=0.5,
-                        use_synonym_threshold=False):
+                        use_synonym_threshold=False,
+                        word_embedding_candidates=5,
+                        random_seed=None):
+    random.seed(random_seed) if random_seed else None
     data_source = data[data['Data_Type'] == data_source_typ].copy()
     data_source["Tweet_Token"] = data_source["Tweet"].apply(token_pipeline)
     label_counts = data_source['Label'].value_counts()
@@ -173,25 +174,26 @@ def fill_missing_labels(data,
         if fill_count > 0:
             synth_label_data = []
             for i in range(fill_count):
-                sample = label_data.sample()
-                synth_tweet, synth_count, word_count = generate_synthetic_data(data=sample, synthetic_method=method,
-                                                                               coverage_percentage=coverage_percentage,
-                                                                               back_translate=back_translation,
-                                                                               word_embeddings=word_embeddings,
-                                                                               gpt2=gp2,
-                                                                               seed_percentage=seed_percentage,
-                                                                               similarity_threshold=similarity_threshold,
-                                                                               use_synonym_threshold=use_synonym_threshold)
-
-                similarity = semantic_similarity(sample["Tweet_Token"], synth_tweet)
+                rand_index = random.randrange(len(label_data))
+                sample = label_data.iloc[rand_index]
+                synth_tweet, synth_count, word_count, synonym_dict = generate_synthetic_data(data=sample,
+                                                                                             synthetic_method=method,
+                                                                                             coverage_percentage=coverage_percentage,
+                                                                                             back_translate=back_translation,
+                                                                                             word_embeddings=word_embeddings,
+                                                                                             gpt2=gp2,
+                                                                                             similarity_threshold=similarity_threshold,
+                                                                                             use_synonym_threshold=use_synonym_threshold,
+                                                                                             word_embedding_candidates=word_embedding_candidates)
+                similarity = semantic_similarity(sample["Tweet"], synth_tweet)
                 label = sample["Label"]
                 tweet_id = sample["Tweet_ID"]
-                synth_label_data.append([tweet_id, synth_tweet, label, similarity, data_type, True, synth_count, i])
+                synth_label_data.append([tweet_id, synth_tweet, label, similarity, data_type, True, synth_count, i, synonym_dict, method])
             synth_df = pd.DataFrame(synth_label_data,
                                     columns=["Tweet_ID", "Tweet", "Label", "Similarity", "Data_Type", "Is_Synthetic",
-                                             "Synth_Count", "ID"])
+                                             "Synth_Count", "ID", "Synonym_Dict", "Method"])
             synth_df["Is_Synthetic"] = synth_df["Is_Synthetic"].astype(bool)
-            training_dataframes.append(synth_label_data)
+            training_dataframes.append(synth_df)
 
     return pd.concat(training_dataframes)
 
@@ -301,17 +303,25 @@ class BackTranslation:
         self.backward_models[(tgt_lang, "en")] = MarianMTModel.from_pretrained(backward_model_name)
 
     def back_translate(self, text, forw_tokenizer, forw_model, backw_tokenizer, backw_model):
-        forward_input = forw_tokenizer.encode(text, return_tensors="pt")
-        forward_input = forward_input.to(self.device)
-        forw_model.to(self.device)
-        forward_output = forw_model.generate(forward_input)
-        forward_translation = forw_tokenizer.decode(forward_output[0], skip_special_tokens=True)
+        try:
+            forward_input = forw_tokenizer.encode(text, return_tensors="pt")
+            forward_input = forward_input.to(self.device)
+            forw_model.to(self.device)
+            forward_output = forw_model.generate(forward_input)
+            forward_translation = forw_tokenizer.decode(forward_output[0], skip_special_tokens=True)
 
-        backward_input = backw_tokenizer.encode(forward_translation, return_tensors="pt")
-        backward_input = backward_input.to(self.device)
-        backw_model.to(self.device)
-        backward_output = backw_model.generate(backward_input)
-        backward_translation = backw_tokenizer.decode(backward_output[0], skip_special_tokens=True)
+            backward_input = backw_tokenizer.encode(forward_translation, return_tensors="pt")
+            backward_input = backward_input.to(self.device)
+            backw_model.to(self.device)
+            backward_output = backw_model.generate(backward_input)
+            backward_translation = backw_tokenizer.decode(backward_output[0], skip_special_tokens=True)
+            if len(text)*2 < len(backward_translation):
+                print("Warning: Back translation is longer than original text:")
+                print(f"Original text: {text}")
+                print(f"Back translation: {backward_translation}")
+                return text
+        except Exception:
+            return text
         return backward_translation
 
     def multiple_back_translate(self, text, first_forw_tokenizer, first_forw_model, second_forw_tokenizer,
@@ -375,22 +385,24 @@ class BackTranslation:
 
 
 class GPT2:
-    def __init__(self):
+    def __init__(self, seed_percent=0.5, max_length_factor=2):
         self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
         self.model = GPT2LMHeadModel.from_pretrained("gpt2")
         self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.seed_percent = seed_percent
+        self.max_length_factor = max_length_factor
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def generate_synthetic_data_with_gpt(self, tweet_token, seed_percent=0.5):
+    def generate_synthetic_data_with_gpt(self, tweet_token):
         tokenizer = self.tokenizer
         model = self.model
         model.to(self.device)
-        length_of_seed_tokens = int(len(tweet_token) * seed_percent)
+        length_of_seed_tokens = int(len(tweet_token) * self.seed_percent)
         seed = " ".join(tweet_token[0:length_of_seed_tokens])
         input_text = tokenizer.encode(seed, return_tensors="pt", padding=True)
         input_text = input_text.to(self.device)
-
-        output = model.generate(input_text, max_length=len(tweet_token) * 2, num_return_sequences=1, do_sample=True,
+        max_length = len(tweet_token) * self.max_length_factor
+        output = model.generate(input_text, max_length=max_length, num_return_sequences=1, do_sample=True,
                                 temperature=0.7, pad_token_id=tokenizer.eos_token_id)
         generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
         generated_text = generated_text.replace("\n", "")
